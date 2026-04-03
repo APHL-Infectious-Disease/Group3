@@ -1,0 +1,13 @@
+# Downloaded sequencing data
+data/
+
+# SRA toolkit cache
+**/sra_cache/
+
+# Pipeline results
+results/
+
+# Nextflow runtime artifacts
+.nextflow/
+work/
+.nextflow.log*
