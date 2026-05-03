@@ -129,7 +129,7 @@ process NANOPLOT {
     tuple val(sample_id), path(reads)
 
     output:
-    tuple val(sample_id), path("nanoplot/NanoPlot-report.html"), optional: true
+    tuple val(sample_id), path("nanoplot/nanoplot/NanoPlot-report.html"), optional: true
 
     script:
     """
