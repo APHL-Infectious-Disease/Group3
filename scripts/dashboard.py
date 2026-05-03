@@ -12,7 +12,7 @@ pipeline with pre-loaded file paths passed as CLI arguments:
         --elgato    results/ont/el_gato/report.json \
         --amrfinder results/ont/amrfinder/sample_amr.tsv \
         --checkm    results/ont/checkm/checkm.tsv \
-        --nanoplot  results/ont/nanoplot/NanoPlot-report.html \
+        --nanoplot  results/ont/nanoplot/nanoplot/NanoPlot-report.html \
         --consensus results/ont/medaka/consensus.fasta
 
 All arguments are optional — the app functions with any subset of files.
