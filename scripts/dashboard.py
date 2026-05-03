@@ -54,7 +54,7 @@ def discover_samples(results_dir: Path) -> dict[str, dict[str, Path | None]]:
     Expected layout:
         results_dir/
           <sample_id>/
-            nanoplot/NanoPlot-report.html
+            nanoplot/nanoplot/NanoPlot-report.html
             checkm2/checkm2_out/quality_report.tsv
             medaka/consensus.fasta
             el_gato/report.json
@@ -73,7 +73,7 @@ def discover_samples(results_dir: Path) -> dict[str, dict[str, Path | None]]:
             "nanoplot":  _find(sample_dir, "nanoplot/NanoPlot-report.html"),
             "checkm":    _find(sample_dir, "checkm/checkm.tsv"),
             "assembly":  _find(sample_dir, "medaka/consensus.fasta"),
-            "elgato":    _find(sample_dir, "el_gato/report.json"),
+            "elgato":    _find(sample_dir, "el_gato/report.json/report.json"),
             "amrfinder": _find_glob(sample_dir, "amrfinder/*_amr.tsv"),
         }
         samples[sid] = slot_map

@@ -122,16 +122,30 @@ process MEDAKA {
 process NANOPLOT {
 
     publishDir "${params.outdir}/ont/${params.run_id}/${sample_id}/nanoplot", mode: 'copy'
+    time '30m'  // 30 minute timeout
+    errorStrategy 'ignore'  // Don't fail pipeline if NanoPlot hangs
 
     input:
     tuple val(sample_id), path(reads)
 
     output:
-    tuple val(sample_id), path("NanoPlot-report.html")
+    tuple val(sample_id), path("nanoplot/NanoPlot-report.html"), optional: true
 
     script:
     """
+    echo "Starting NanoPlot for ${sample_id}"
+    echo "Input file: ${reads}"
+    echo "File size: \$(ls -lh ${reads})"
+    
+    # Check if file exists and is readable
+    if [ ! -f "${reads}" ]; then
+        echo "ERROR: Input file ${reads} does not exist"
+        exit 1
+    fi
+
     NanoPlot --fastq ${reads} -o nanoplot --threads ${task.cpus}
+    
+    echo "NanoPlot completed for ${sample_id}"
     """
 }
 
@@ -311,7 +325,7 @@ workflow {
         // ---- Wait for all samples to finish, then launch dashboard ----
         // collect() ensures we wait for every sample before triggering
         trigger_ch = checkm_out
-            .mix( nanoplot_out, elgato_out, amr_out )
+            .mix( elgato_out, amr_out )  // Temporarily removed nanoplot_out
             .map { sid, f -> f.toString() }
             .collect()
             .map { "done" }
