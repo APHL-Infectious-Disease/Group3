@@ -127,7 +127,7 @@ process NANOPLOT {
     tuple val(sample_id), path(reads)
 
     output:
-    tuple val(sample_id), path("nanoplot/NanoPlot-report.html")
+    tuple val(sample_id), path("NanoPlot-report.html")
 
     script:
     """
@@ -135,24 +135,24 @@ process NANOPLOT {
     """
 }
 
-process CHECKM2 {
+process CHECKM {
 
-    publishDir "${params.outdir}/ont/${params.run_id}/${sample_id}/checkm2", mode: 'copy'
+    publishDir "${params.outdir}/ont/${params.run_id}/${sample_id}/checkm", mode: 'copy'
 
     input:
     tuple val(sample_id), path(fasta)
 
     output:
-    tuple val(sample_id), path("checkm2_out/quality_report.tsv")
+    tuple val(sample_id), path("checkm.tsv")
 
     script:
     """
-    checkm2 predict \
-        --input ${fasta} \
-        --output-directory checkm2_out \
-        --threads ${task.cpus} \
-        --database_path ${params.checkm2_db} \
-        --force
+    mkdir -p in
+    cp ${fasta} in/
+
+    checkm taxon_set genus Legionella legionella
+    checkm analyze legionella in out -x fasta
+    checkm qa legionella out -f checkm.tsv -o 2
     """
 }
 
@@ -301,15 +301,16 @@ workflow {
         nanoplot_out  = NANOPLOT(subsampled)
 
         // ---- Fan-out from polished assembly ----
-        checkm2_out   = CHECKM2(polished)
+        checkm_out    = CHECKM(polished)
         prokka_out    = PROKKA(polished)
         elgato_out    = EL_GATO_ONT(polished)
 
         // ---- AMRFinder needs GFF + FAA from Prokka ----
         amr_out = AMRFINDER( prokka_out.gff.join(prokka_out.faa) )
 
-        // ---- Wait for all samples to finish, then launch dashboard - collect() ensues we wait for every sample before triggering
-        trigger_ch = checkm2_out
+        // ---- Wait for all samples to finish, then launch dashboard ----
+        // collect() ensures we wait for every sample before triggering
+        trigger_ch = checkm_out
             .mix( nanoplot_out, elgato_out, amr_out )
             .map { sid, f -> f.toString() }
             .collect()

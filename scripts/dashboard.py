@@ -1,6 +1,6 @@
 """
 Legionella Pipeline Dashboard
-Multi-sample support with per-sample caching, CheckM2 integration.
+Multi-sample support with per-sample caching, CheckM integration.
 """
 
 import argparse
@@ -31,7 +31,7 @@ def parse_cli_args():
     # Legacy single-sample flags kept for backwards compat
     parser.add_argument("--elgato",    default=None)
     parser.add_argument("--amrfinder", default=None)
-    parser.add_argument("--checkm2",   default=None)
+    parser.add_argument("--checkm",    default=None)
     parser.add_argument("--nanoplot",  default=None)
     parser.add_argument("--consensus", default=None)
 
@@ -70,9 +70,8 @@ def discover_samples(results_dir: Path) -> dict[str, dict[str, Path | None]]:
             continue
         sid = sample_dir.name
         slot_map = {
-            "nanoplot":  _find(sample_dir, "nanoplot/nanoplot/NanoPlot-report.html"),
-            "checkm2":   _find(sample_dir, "checkm2/checkm2_out/quality_report.tsv")
-                         or _find(sample_dir, "checkm2/quality_report.tsv"),
+            "nanoplot":  _find(sample_dir, "nanoplot/NanoPlot-report.html"),
+            "checkm":    _find(sample_dir, "checkm/checkm.tsv"),
             "assembly":  _find(sample_dir, "medaka/consensus.fasta"),
             "elgato":    _find(sample_dir, "el_gato/report.json"),
             "amrfinder": _find_glob(sample_dir, "amrfinder/*_amr.tsv"),
@@ -96,7 +95,7 @@ def build_legacy_sample(args) -> dict | None:
     slot_map = {}
     for slot, attr, key in [
         ("nanoplot",  "nanoplot",  "nanoplot"),
-        ("checkm2",   "checkm2",   "checkm2"),
+        ("checkm",    "checkm",    "checkm"),
         ("assembly",  "consensus", "assembly"),
         ("elgato",    "elgato",    "elgato"),
         ("amrfinder", "amrfinder", "amrfinder"),
@@ -309,47 +308,66 @@ def parse_assembly_fasta(content: str) -> dict:
 
 
 @st.cache_data
-def parse_checkm2_tsv(content: str) -> dict:
+def parse_checkm_tsv(content: str) -> dict:
     """
-    Parse CheckM2 quality_report.tsv.
-    Expected columns (from real output):
-        Name, Completeness, Contamination, Completeness_Model_Used,
-        Translation_Table_Used, Coding_Density, Contig_N50, Average_Gene_Length,
-        Genome_Size, GC_Content, Total_Coding_Sequences, Total_Contigs,
-        Max_Contig_Length, Additional_Notes
-    Returns a flat dict of values.
+    Parse CheckM TSV (-o 2 format) with dashed separator lines.
+    Sample format has header/separator lines with dashes, then data row.
     """
-    df = pd.read_csv(StringIO(content), sep="\t")
-    if df.empty:
+    lines = [l.strip() for l in content.splitlines() if l.strip()]
+    data = {}
+
+    # Find the data line (not starting with dashes, not header)
+    data_line = None
+    for line in lines:
+        if not line.startswith('-') and 'Bin Id' not in line and line:
+            data_line = line
+            break
+    
+    if not data_line:
         return {}
 
-    row = df.iloc[0]
-
-    def _get(col, cast=None):
-        if col in row.index and pd.notna(row[col]):
-            val = row[col]
+    # Split on multiple spaces to handle the formatted table structure
+    import re
+    parts = re.split(r'\s{2,}', data_line)
+    
+    if len(parts) < 6:
+        return {}
+    
+    try:
+        # Map the CheckM -o 2 output columns to our data structure
+        # Format: Bin Id, Marker lineage, # genomes, # markers, # marker sets, 
+        #         Completeness, Contamination, Strain heterogeneity, Genome size (bp), etc.
+        
+        data["bin_id"] = parts[0]
+        data["lineage"] = parts[1].replace('(', '').replace(')', '') if len(parts) > 1 else ""
+        data["completeness"] = float(parts[5]) if len(parts) > 5 else None
+        data["contamination"] = float(parts[6]) if len(parts) > 6 else None  
+        data["strain_heterogeneity"] = float(parts[7]) if len(parts) > 7 else None
+        
+        # Assembly stats from CheckM extended output
+        if len(parts) > 8:
+            data["genome_size_bp"] = int(parts[8]) if parts[8].isdigit() else None
+        if len(parts) > 10:
+            data["num_contigs"] = int(parts[10]) if parts[10].isdigit() else None
+        if len(parts) > 12:
+            data["n50_contigs"] = int(parts[12]) if parts[12].isdigit() else None
+        if len(parts) > 14:
+            data["mean_contig_len"] = int(float(parts[14])) if parts[14].replace('.','').isdigit() else None
+        if len(parts) > 16:
+            data["longest_contig"] = int(parts[16]) if parts[16].isdigit() else None
+            
+    except (ValueError, IndexError) as e:
+        # Fallback: try to extract basic completeness/contamination with regex
+        import re
+        comp_match = re.search(r'(\d+\.\d+).*?(\d+\.\d+)', data_line)
+        if comp_match:
             try:
-                return cast(val) if cast else val
-            except Exception:
-                return val
-        return None
+                data["completeness"] = float(comp_match.group(1))
+                data["contamination"] = float(comp_match.group(2))
+            except ValueError:
+                pass
 
-    return {
-        "bin_id":                    _get("Name"),
-        "completeness":              _get("Completeness",              float),
-        "contamination":             _get("Contamination",             float),
-        "completeness_model":        _get("Completeness_Model_Used"),
-        "translation_table":         _get("Translation_Table_Used",    int),
-        "coding_density":            _get("Coding_Density",            float),
-        "contig_n50":                _get("Contig_N50",                int),
-        "average_gene_length":       _get("Average_Gene_Length",       float),
-        "genome_size":               _get("Genome_Size",               int),
-        "gc_content":                _get("GC_Content",                float),
-        "total_coding_sequences":    _get("Total_Coding_Sequences",    int),
-        "total_contigs":             _get("Total_Contigs",             int),
-        "max_contig_length":         _get("Max_Contig_Length",         int),
-        "additional_notes":          _get("Additional_Notes"),
-    }
+    return data
 
 
 @st.cache_data
@@ -415,8 +433,8 @@ def parse_and_cache(sample_id: str, slot: str, source) -> None:
             cache["parsed"]["assembly"]  = parse_assembly_fasta(content)
         elif slot == "elgato":
             cache["parsed"]["elgato"]    = parse_elgato_json(content)
-        elif slot == "checkm2":
-            cache["parsed"]["checkm2"]   = parse_checkm2_tsv(content)
+        elif slot == "checkm":
+            cache["parsed"]["checkm"]    = parse_checkm_tsv(content)
         elif slot == "amrfinder":
             cache["parsed"]["amrfinder"] = parse_amrfinder_tsv(content)
     except Exception as e:
@@ -503,14 +521,14 @@ class LegionellaPipelineDashboard:
                                            value="manual_sample")
 
                 nano = st.file_uploader("NanoPlot HTML",  type=["html"])
-                chk2 = st.file_uploader("CheckM2 TSV",    type=["tsv", "txt"])
+                chkm = st.file_uploader("CheckM TSV",     type=["tsv", "txt"])
                 asm  = st.file_uploader("Consensus FASTA", type=["fasta","fa","fna"])
                 elg  = st.file_uploader("El Gato JSON",   type=["json"])
                 amr  = st.file_uploader("AMRFinder TSV",  type=["tsv","txt"])
 
                 uploads = {
                     "nanoplot":  nano,
-                    "checkm2":   chk2,
+                    "checkm":    chkm,
                     "assembly":  asm,
                     "elgato":    elg,
                     "amrfinder": amr,
@@ -542,7 +560,7 @@ class LegionellaPipelineDashboard:
                 cache = get_sample_cache(sid)
                 labels = {
                     "nanoplot":  "NanoPlot",
-                    "checkm2":   "CheckM2",
+                    "checkm":    "CheckM",
                     "assembly":  "Consensus",
                     "elgato":    "El Gato",
                     "amrfinder": "AMRFinder",
@@ -646,12 +664,12 @@ class LegionellaPipelineDashboard:
     def _render_assembly_qc(self, parsed: dict):
         st.markdown("## Assembly Quality Control")
 
-        checkm2 = parsed.get("checkm2")
-        if checkm2:
-            st.markdown("### CheckM2 Assembly Assessment")
-            self._render_checkm2(checkm2)
+        checkm = parsed.get("checkm")
+        if checkm:
+            st.markdown("### CheckM Assembly Assessment")
+            self._render_checkm_stats(checkm)
         else:
-            st.info("No CheckM2 report loaded for this sample.")
+            st.info("No CheckM report loaded for this sample.")
 
         st.divider()
 
@@ -686,12 +704,14 @@ class LegionellaPipelineDashboard:
             )
             st.plotly_chart(fig, use_container_width=True)
 
-    def _render_checkm2(self, d: dict):
+    def _render_checkm_stats(self, d: dict):
+        """Render CheckM completeness, contamination, and assembly stats."""
         comp = d.get("completeness")
         cont = d.get("contamination")
+        sh = d.get("strain_heterogeneity")
 
         if comp is None:
-            st.warning("CheckM2 QC values could not be parsed.")
+            st.warning("CheckM QC values could not be parsed from the TSV.")
             st.json(d)
             return
 
@@ -703,15 +723,15 @@ class LegionellaPipelineDashboard:
         else:
             st.error("Low Quality — consider reassembly or additional filtering")
 
-        # ---- Core QC row ----
+        # Core QC metrics
+        c1, c2, c3 = st.columns(3)
         comp_cls = "quality-good" if comp >= 95 else "quality-warning" if comp >= 90 else "quality-poor"
         cont_cls = "quality-good" if cont <= 5  else "quality-warning" if cont <= 10  else "quality-poor"
 
-        c1, c2, c3 = st.columns(3)
         for col, label, val, cls in [
-            (c1, "Completeness",   f"{comp:.2f}%", comp_cls),
-            (c2, "Contamination",  f"{cont:.2f}%", cont_cls),
-            (c3, "Coding Density", f"{d['coding_density']:.3f}" if d.get("coding_density") else "—", ""),
+            (c1, "Completeness",        f"{comp:.2f}%", comp_cls),
+            (c2, "Contamination",       f"{cont:.2f}%", cont_cls),
+            (c3, "Strain Heterogeneity",f"{sh:.2f}%" if sh is not None else "—", ""),
         ]:
             col.markdown(
                 f'<div class="stat-card">'
@@ -720,74 +740,30 @@ class LegionellaPipelineDashboard:
                 unsafe_allow_html=True,
             )
 
-        st.markdown("#### Assembly & Gene Statistics")
+        # Assembly-level stats from CheckM extended output (-o 2)
+        assembly_fields = {
+            "Genome Size (bp)":      d.get("genome_size_bp"),
+            "# Contigs":             d.get("num_contigs"),
+            "N50 Contigs (bp)":      d.get("n50_contigs"),
+            "Mean Contig Len (bp)":  d.get("mean_contig_len"),
+            "Longest Contig (bp)":   d.get("longest_contig"),
+        }
+        available = {k: v for k, v in assembly_fields.items() if v is not None}
 
-        # ---- Extended stats grid ----
-        fields = [
-            ("Genome Size (bp)",        d.get("genome_size"),             None),
-            ("Total Contigs",           d.get("total_contigs"),            None),
-            ("Contig N50 (bp)",         d.get("contig_n50"),               None),
-            ("Max Contig Length (bp)",  d.get("max_contig_length"),        None),
-            ("GC Content",              d.get("gc_content"),               ".3f"),
-            ("Total CDS",               d.get("total_coding_sequences"),   None),
-            ("Avg Gene Length (bp)",    d.get("average_gene_length"),      ".1f"),
-            ("Translation Table",       d.get("translation_table"),        None),
-        ]
-
-        available = [(lbl, val, fmt) for lbl, val, fmt in fields if val is not None]
         if available:
-            cols = st.columns(min(4, len(available)))
-            for i, (label, val, fmt) in enumerate(available):
-                if fmt:
-                    display = format(val, fmt)
-                elif isinstance(val, int):
-                    display = f"{val:,}"
-                else:
-                    display = str(val)
-                cols[i % 4].markdown(
+            st.markdown("#### Assembly Statistics (from CheckM)")
+            cols = st.columns(min(3, len(available)))
+            for i, (label, val) in enumerate(available.items()):
+                cols[i % 3].markdown(
                     f'<div class="stat-card">'
-                    f'<div class="metric-value">{display}</div>'
+                    f'<div class="metric-value">{val:,}</div>'
                     f'<div class="metric-label">{label}</div></div>',
                     unsafe_allow_html=True,
                 )
 
-        # ---- Gauge charts ----
-        col_g1, col_g2 = st.columns(2)
-        for col, title, value, max_val, good_thresh, color_good, color_warn in [
-            (col_g1, "Completeness (%)", comp, 100, 95, "#34d399", "#fbbf24"),
-            (col_g2, "Contamination (%)", cont, 20,  5, "#34d399", "#fbbf24"),
-        ]:
-            bar_color = color_good if (value >= good_thresh if title.startswith("C") and "ompl" in title
-                                       else value <= good_thresh) else color_warn
-            fig = go.Figure(go.Indicator(
-                mode="gauge+number",
-                value=value,
-                number={"suffix": "%", "font": {"color": bar_color, "size": 28,
-                                                "family": "IBM Plex Mono"}},
-                gauge={
-                    "axis": {"range": [0, max_val],
-                             "tickcolor": "#6a8fa8", "tickfont": {"color": "#6a8fa8"}},
-                    "bar": {"color": bar_color},
-                    "bgcolor": "#0d1f33",
-                    "borderwidth": 1, "bordercolor": "#1e3a5f",
-                    "steps": [{"range": [0, max_val], "color": "#071526"}],
-                },
-                title={"text": title, "font": {"color": "#93c5fd", "size": 14,
-                                               "family": "IBM Plex Sans"}},
-            ))
-            fig.update_layout(
-                height=220, margin=dict(t=40, b=10, l=20, r=20),
-                paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#93c5fd"),
-            )
-            col.plotly_chart(fig, use_container_width=True)
-
-        # Model info
-        model = d.get("completeness_model")
-        notes = d.get("additional_notes")
-        if model:
-            st.caption(f"Completeness model: {model}")
-        if notes and str(notes).lower() not in ("none", "nan", ""):
-            st.caption(f"Notes: {notes}")
+        # Lineage / bin info
+        if d.get("bin_id") or d.get("lineage"):
+            st.caption(f"Bin: {d.get('bin_id','')}   |   Lineage: {d.get('lineage','')}")
 
     # ---- Tab 3: Results & Annotations --------------------------
 
